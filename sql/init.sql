@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS monitoring_targets (
     timeout_seconds INT NOT NULL DEFAULT 5,
     max_response_time_ms INT NOT NULL DEFAULT 1000,
     check_interval_seconds INT NOT NULL DEFAULT 60,
+    failure_threshold INT NOT NULL DEFAULT 3,
+    consecutive_failures INT NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -77,7 +79,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE TABLE IF NOT EXISTS notifications (
     id INT AUTO_INCREMENT PRIMARY KEY,
     alert_id INT NULL,
-    notification_type ENUM('FAILURE', 'SLOW_RESPONSE', 'REPORT') NOT NULL,
+    notification_type ENUM('FAILURE', 'SLOW_RESPONSE', 'RECOVERY', 'REPORT') NOT NULL,
     recipient_email VARCHAR(255) NOT NULL,
     subject VARCHAR(255) NOT NULL,
     body TEXT NULL,
@@ -96,6 +98,9 @@ CREATE INDEX idx_targets_active
 
 CREATE INDEX idx_check_results_target_time
     ON check_results(target_id, checked_at);
+
+CREATE INDEX idx_check_results_response_time
+    ON check_results(target_id, response_time_ms);
 
 CREATE INDEX idx_alerts_target_resolved
     ON alerts(target_id, is_resolved);
