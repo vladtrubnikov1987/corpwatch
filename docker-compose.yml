@@ -1,0 +1,54 @@
+services:
+  db:
+    image: mariadb:11.4
+    container_name: corpwatch_db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${DB_NAME}
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - corpwatch_db_data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - corpwatch_network
+
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    container_name: corpwatch_phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+    ports:
+      - "8081:80"
+    depends_on:
+      - db
+    networks:
+      - corpwatch_network
+
+  app:
+    build: .
+    container_name: corpwatch_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - db
+    networks:
+      - corpwatch_network
+
+volumes:
+  corpwatch_db_data:
+
+networks:
+  corpwatch_network:
+    driver: bridge
+    

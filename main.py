@@ -1,0 +1,1 @@
+print("CorpWatch application container started successfully.")
