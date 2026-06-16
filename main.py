@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from config.settings import settings
 from repositories.database import database_manager
+from services.monitoring_service import monitoring_service
 from services.target_service import target_service
 from utils.logger import logger
 
@@ -37,6 +38,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def _extract_target_id(self) -> int | None:
         match = re.match(r"^/api/targets/(\d+)$", self.path)
+
+        if match:
+            return int(match.group(1))
+
+        return None
+
+    def _extract_check_target_id(self) -> int | None:
+        match = re.match(r"^/api/targets/(\d+)/check$", self.path)
 
         if match:
             return int(match.group(1))
@@ -79,6 +88,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "error": "Invalid or missing API key",
                 },
             )
+            return
+
+        check_target_id = self._extract_check_target_id()
+
+        if check_target_id is not None:
+            self.handle_manual_check(check_target_id)
             return
 
         if self.path == "/api/targets":
@@ -229,6 +244,30 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         except Exception as error:
             logger.error("Failed to get target: %s", error)
+            self._send_json_response(
+                500,
+                {
+                    "success": False,
+                    "error": "Internal server error",
+                },
+            )
+
+    def handle_manual_check(self, target_id: int) -> None:
+        try:
+            result = monitoring_service.check_target_now(target_id)
+
+            status_code = 200 if result["success"] else 404
+
+            logger.info(
+                "Manual check completed for target_id=%s",
+                target_id,
+            )
+
+            self._send_json_response(status_code, result)
+
+        except Exception as error:
+            logger.error("Manual check failed: %s", error)
+
             self._send_json_response(
                 500,
                 {
