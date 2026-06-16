@@ -57,6 +57,7 @@ class TargetRepository:
                     ORDER BY id DESC;
                     """
                 )
+
                 return cursor.fetchall()
 
         finally:
@@ -75,6 +76,7 @@ class TargetRepository:
                     """,
                     (target_id,),
                 )
+
                 return cursor.fetchone()
 
         finally:
@@ -132,6 +134,30 @@ class TargetRepository:
                     WHERE id = %s;
                     """,
                     (target_id,),
+                )
+
+                connection.commit()
+                return cursor.rowcount > 0
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        finally:
+            connection.close()
+
+    def update_consecutive_failures(self, target_id: int, value: int) -> bool:
+        connection = database_manager.get_connection()
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE monitoring_targets
+                    SET consecutive_failures = %s
+                    WHERE id = %s;
+                    """,
+                    (value, target_id),
                 )
 
                 connection.commit()
