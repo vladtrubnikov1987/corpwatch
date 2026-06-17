@@ -5,6 +5,7 @@ import requests
 from repositories.alert_repository import alert_repository
 from repositories.check_result_repository import check_result_repository
 from repositories.target_repository import target_repository
+from services.notification_service import notification_service
 
 
 class MonitoringService:
@@ -73,6 +74,12 @@ class MonitoringService:
             check_data=check_data,
         )
 
+        notification_info = self.process_notification_logic(
+            target=target,
+            check_data=check_data,
+            alert_info=alert_info,
+        )
+
         return {
             "success": True,
             "message": "Manual check completed",
@@ -89,6 +96,8 @@ class MonitoringService:
             "alert_status": alert_info["alert_status"],
             "alert_id": alert_info["alert_id"],
             "alert_severity": alert_info["alert_severity"],
+            "notification_status": notification_info["notification_status"],
+            "notification_id": notification_info["notification_id"],
         }
 
     def process_alert_logic(
@@ -166,6 +175,39 @@ class MonitoringService:
             "alert_status": "OPENED",
             "alert_id": alert_id,
             "alert_severity": severity,
+        }
+
+    def process_notification_logic(
+        self,
+        target: dict,
+        check_data: dict,
+        alert_info: dict,
+    ) -> dict:
+        if alert_info["alert_status"] == "OPENED":
+            notification_result = notification_service.send_alert_opened_email(
+                alert=alert_info,
+                target=target,
+                check_data=check_data,
+            )
+
+            return {
+                "notification_status": notification_result["status"],
+                "notification_id": notification_result["notification_id"],
+            }
+
+        if alert_info["alert_status"] == "RESOLVED":
+            notification_result = notification_service.send_alert_resolved_email(
+                target=target,
+            )
+
+            return {
+                "notification_status": notification_result["status"],
+                "notification_id": notification_result["notification_id"],
+            }
+
+        return {
+            "notification_status": "NOT_REQUIRED",
+            "notification_id": None,
         }
 
     def calculate_severity(
