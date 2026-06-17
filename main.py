@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from config.settings import settings
 from repositories.database import database_manager
 from services.monitoring_service import monitoring_service
+from services.report_service import report_service
 from services.target_service import target_service
 from utils.logger import logger
 
@@ -44,7 +45,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         return None
 
-    def _extract_check_target_id(self) -> int | None:
+    def _extract_target_check_id(self) -> int | None:
         match = re.match(r"^/api/targets/(\d+)/check$", self.path)
 
         if match:
@@ -61,6 +62,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/targets":
             self.handle_get_all_targets()
+            return
+
+        if self.path == "/api/reports/summary":
+            self.handle_summary_report()
             return
 
         target_id = self._extract_target_id()
@@ -90,14 +95,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        check_target_id = self._extract_check_target_id()
-
-        if check_target_id is not None:
-            self.handle_manual_check(check_target_id)
-            return
-
         if self.path == "/api/targets":
             self.handle_create_target()
+            return
+
+        target_id = self._extract_target_check_id()
+
+        if target_id is not None:
+            self.handle_manual_check(target_id)
             return
 
         self._send_json_response(
@@ -252,30 +257,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 },
             )
 
-    def handle_manual_check(self, target_id: int) -> None:
-        try:
-            result = monitoring_service.check_target_now(target_id)
-
-            status_code = 200 if result["success"] else 404
-
-            logger.info(
-                "Manual check completed for target_id=%s",
-                target_id,
-            )
-
-            self._send_json_response(status_code, result)
-
-        except Exception as error:
-            logger.error("Manual check failed: %s", error)
-
-            self._send_json_response(
-                500,
-                {
-                    "success": False,
-                    "error": "Internal server error",
-                },
-            )
-
     def handle_update_target(self, target_id: int) -> None:
         try:
             data = self._read_json_body()
@@ -321,13 +302,47 @@ class ApiHandler(BaseHTTPRequestHandler):
                 },
             )
 
+    def handle_manual_check(self, target_id: int) -> None:
+        try:
+            result = monitoring_service.check_target_now(target_id)
+
+            status_code = 200 if result["success"] else 404
+            self._send_json_response(status_code, result)
+
+        except Exception as error:
+            logger.error("Manual target check failed: %s", error)
+            self._send_json_response(
+                500,
+                {
+                    "success": False,
+                    "error": "Internal server error",
+                    "message": "Manual target check failed",
+                },
+            )
+
+    def handle_summary_report(self) -> None:
+        try:
+            result = report_service.get_summary_report()
+            self._send_json_response(200, result)
+
+        except Exception as error:
+            logger.error("Failed to generate summary report: %s", error)
+            self._send_json_response(
+                500,
+                {
+                    "success": False,
+                    "error": "Internal server error",
+                    "message": "Failed to generate summary report",
+                },
+            )
+
 
 def run_server() -> None:
     server_address = (settings.APP_HOST, settings.APP_PORT)
     http_server = ThreadingHTTPServer(server_address, ApiHandler)
 
     logger.info(
-        "CorpWatch API server started on %s:%s",
+        "CorpWatch Python backend server started on %s:%s",
         settings.APP_HOST,
         settings.APP_PORT,
     )

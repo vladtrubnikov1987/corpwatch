@@ -1,54 +1,79 @@
 services:
   db:
-    image: mariadb:11.4
+    image: mariadb:11
     container_name: corpwatch_db
     restart: unless-stopped
+
     environment:
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
-      MARIADB_DATABASE: ${DB_NAME}
-      MARIADB_USER: ${DB_USER}
-      MARIADB_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: corpwatch
+      MYSQL_USER: corpwatch_user
+      MYSQL_PASSWORD: corpwatch_password
+
     ports:
       - "3306:3306"
-    volumes:
-      - corpwatch_db_data:/var/lib/mysql
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - corpwatch_network
 
-  phpmyadmin:
-    image: phpmyadmin:5.2
-    container_name: corpwatch_phpmyadmin
-    restart: unless-stopped
-    environment:
-      PMA_HOST: db
-      PMA_PORT: 3306
-    ports:
-      - "8081:80"
-    depends_on:
-      - db
-    networks:
-      - corpwatch_network
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   app:
     build: .
     container_name: corpwatch_app
+    command: python main.py
     restart: unless-stopped
+
     env_file:
       - .env
+
     ports:
       - "8000:8000"
+
     volumes:
       - ./logs:/app/logs
+
     depends_on:
-      - db
-    networks:
-      - corpwatch_network
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    container_name: corpwatch_worker
+    command: python worker.py
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./logs:/app/logs
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: corpwatch_phpmyadmin
+    restart: unless-stopped
+
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+
+    ports:
+      - "8081:80"
+
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
-  corpwatch_db_data:
-
-networks:
-  corpwatch_network:
-    driver: bridge
-    
+  db_data:
