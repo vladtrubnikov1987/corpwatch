@@ -1,0 +1,42 @@
+[
+  {
+    "user_id": 1,
+    "name": "Google Homepage",
+    "url": "https://www.google.com",
+    "expected_status": 200,
+    "timeout_seconds": 5,
+    "max_response_time_ms": 3000,
+    "check_interval_seconds": 10,
+    "failure_threshold": 3
+  },
+  {
+    "user_id": 1,
+    "name": "Currency API",
+    "url": "https://api.frankfurter.app/latest",
+    "expected_status": 200,
+    "timeout_seconds": 5,
+    "max_response_time_ms": 3000,
+    "check_interval_seconds": 10,
+    "failure_threshold": 3
+  },
+  {
+    "user_id": 1,
+    "name": "Cloudflare Homepage",
+    "url": "https://www.cloudflare.com",
+    "expected_status": 200,
+    "timeout_seconds": 5,
+    "max_response_time_ms": 3000,
+    "check_interval_seconds": 10,
+    "failure_threshold": 3
+  },
+  {
+    "user_id": 1,
+    "name": "CorpWatch Demo Website",
+    "url": "https://spectrdiagnostic.com",
+    "expected_status": 200,
+    "timeout_seconds": 5,
+    "max_response_time_ms": 3000,
+    "check_interval_seconds": 10,
+    "failure_threshold": 1
+  }
+]
