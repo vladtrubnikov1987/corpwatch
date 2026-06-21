@@ -89,6 +89,33 @@ services:
       ollama:
         condition: service_started
 
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010/ai/health', timeout=5).raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  telegram_bot:
+    build: .
+    container_name: corpwatch_telegram_bot
+    command: python telegram_bot.py
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      AI_ASSISTANT_URL: http://ai_assistant:8010
+      TELEGRAM_POLL_INTERVAL_SECONDS: 2
+
+    volumes:
+      - ./logs:/app/logs
+
+    depends_on:
+      ai_assistant:
+        condition: service_healthy
+
   ollama:
     image: ollama/ollama
     container_name: corpwatch_ollama
