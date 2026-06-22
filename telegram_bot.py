@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from typing import Any
 
@@ -19,6 +20,11 @@ class CorpWatchTelegramBot:
         self.ai_assistant_url = os.getenv(
             "AI_ASSISTANT_URL",
             "http://ai_assistant:8010",
+        ).rstrip("/")
+
+        self.corpwatch_api_url = os.getenv(
+            "CORPWATCH_API_URL",
+            "http://app:8000",
         ).rstrip("/")
 
         self.api_key = os.getenv("API_KEY", "change_me")
@@ -49,6 +55,7 @@ class CorpWatchTelegramBot:
             json={
                 "chat_id": chat_id,
                 "text": text,
+                "disable_web_page_preview": True,
             },
             timeout=20,
         )
@@ -88,21 +95,155 @@ class CorpWatchTelegramBot:
 
         return data.get("result", [])
 
-    def should_run_manual_check(self, text: str) -> bool:
-        lowered = text.lower()
+    # ---------- CorpWatch API ----------
 
-        trigger_words = [
-            "проверь",
-            "проверить",
-            "check target",
-            "manual check",
-            "что с target",
-            "что с целью",
+    def get_targets(self) -> list[dict[str, Any]]:
+        response = requests.get(
+            f"{self.corpwatch_api_url}/api/targets",
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+        return data.get("targets", data.get("data", []))
+
+    def get_targets_text(self) -> str:
+        targets = self.get_targets()
+
+        if not targets:
+            return "В CorpWatch пока нет targets."
+
+        active_targets = []
+        inactive_targets = []
+
+        for target in targets:
+            line = (
+                f"{target.get('id')} — "
+                f"{target.get('name')} — "
+                f"{target.get('url')} — "
+                f"expected {target.get('expected_status')}"
+            )
+
+            if int(target.get("is_active", 0)) == 1:
+                active_targets.append(line)
+            else:
+                inactive_targets.append(line)
+
+        parts = []
+
+        if active_targets:
+            parts.append("Active targets:")
+            parts.extend(active_targets)
+
+        if inactive_targets:
+            parts.append("")
+            parts.append("Inactive targets:")
+            parts.extend(inactive_targets)
+
+        return "\n".join(parts)
+
+    def get_target_text(self, target_id: int) -> str:
+        targets = self.get_targets()
+
+        for target in targets:
+            if int(target.get("id")) == target_id:
+                status = "active" if int(target.get("is_active", 0)) == 1 else "inactive"
+
+                return (
+                    f"Target {target.get('id')} — {target.get('name')}\n\n"
+                    f"URL: {target.get('url')}\n"
+                    f"Expected status: {target.get('expected_status')}\n"
+                    f"Timeout: {target.get('timeout_seconds')} sec\n"
+                    f"Max response time: {target.get('max_response_time_ms')} ms\n"
+                    f"Check interval: {target.get('check_interval_seconds')} sec\n"
+                    f"Failure threshold: {target.get('failure_threshold')}\n"
+                    f"Status: {status}\n\n"
+                    f"Чтобы запустить проверку, напиши:\n"
+                    f"проверь target {target_id}"
+                )
+
+        return (
+            f"Target {target_id} не найден.\n"
+            f"Напиши /targets, чтобы увидеть список targets."
+        )
+
+    # ---------- Intent helpers ----------
+
+    def extract_target_id(self, text: str) -> int | None:
+        text = text.strip()
+
+        if text.isdigit():
+            return int(text)
+
+        patterns = [
+            r"\btarget\s+(\d+)\b",
+            r"\bid\s*=?\s*(\d+)\b",
+            r"\bтаргет\s+(\d+)\b",
+            r"\bцель\s+(\d+)\b",
         ]
 
-        return any(word in lowered for word in trigger_words)
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
 
-    def ask_ai_assistant(self, question: str, run_check: bool) -> str:
+            if match:
+                return int(match.group(1))
+
+        return None
+
+    def has_check_intent(self, text: str) -> bool:
+        lowered = text.lower()
+
+        check_words = [
+            "проверь",
+            "проверить",
+            "проверяй",
+            "запусти проверку",
+            "сделай проверку",
+            "manual check",
+            "check",
+        ]
+
+        return any(word in lowered for word in check_words)
+
+    def is_system_status_question(self, text: str) -> bool:
+        lowered = text.lower()
+
+        system_phrases = [
+            "что сейчас с системой",
+            "что с системой",
+            "состояние системы",
+            "статус системы",
+            "summary",
+            "system status",
+            "что происходит в системе",
+            "как система",
+            "как дела у системы",
+        ]
+
+        return any(phrase in lowered for phrase in system_phrases)
+
+    def detect_mode(self, text: str) -> str:
+        target_id = self.extract_target_id(text)
+        check_intent = self.has_check_intent(text)
+        system_status_question = self.is_system_status_question(text)
+
+        if check_intent and target_id is not None:
+            return "manual_check"
+
+        if system_status_question:
+            return "system_summary"
+
+        return "free_chat"
+
+    # ---------- AI Assistant ----------
+
+    def ask_ai_assistant(
+        self,
+        question: str,
+        run_check: bool,
+        mode: str,
+    ) -> str:
         response = requests.post(
             f"{self.ai_assistant_url}/ai/explain",
             headers={
@@ -111,18 +252,29 @@ class CorpWatchTelegramBot:
             json={
                 "question": question,
                 "run_check": run_check,
+                "mode": mode,
             },
             timeout=150,
         )
 
-        response.raise_for_status()
+        try:
+            data = response.json()
+        except ValueError:
+            response.raise_for_status()
+            return "AI assistant вернул невалидный ответ."
 
-        data = response.json()
+        if not response.ok:
+            return data.get(
+                "message",
+                f"AI assistant вернул ошибку HTTP {response.status_code}.",
+            )
 
         if not data.get("success"):
             return data.get("message", "AI assistant вернул ошибку.")
 
         return data.get("answer", "AI assistant не вернул answer.")
+
+    # ---------- Message handling ----------
 
     def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat", {})
@@ -131,6 +283,8 @@ class CorpWatchTelegramBot:
 
         if not chat_id or not text:
             return
+
+        text = text.strip()
 
         logger.info("Telegram message received from chat_id=%s: %s", chat_id, text)
 
@@ -144,9 +298,12 @@ class CorpWatchTelegramBot:
                 (
                     "Привет. Я CorpWatch AI Assistant.\n\n"
                     "Можешь написать:\n"
-                    "Что сейчас с системой?\n"
-                    "Проверь target 6\n"
-                    "Почему пришёл alert?"
+                    "/targets\n"
+                    "4\n"
+                    "target 4\n"
+                    "проверь target 4\n"
+                    "что сейчас с системой?\n"
+                    "что такое API?"
                 ),
             )
             return
@@ -157,16 +314,59 @@ class CorpWatchTelegramBot:
                 (
                     "Команды:\n"
                     "/start — начать\n"
-                    "/help — помощь\n\n"
+                    "/help — помощь\n"
+                    "/targets — показать targets\n\n"
                     "Примеры:\n"
-                    "Что сейчас с системой?\n"
-                    "Проверь target 6\n"
-                    "Проверь цель 6 и объясни простым языком"
+                    "4 — показать информацию о target 4\n"
+                    "target 4 — показать информацию о target 4\n"
+                    "проверь target 4 — запустить manual check\n"
+                    "проверь — попросит указать target id\n"
+                    "что сейчас с системой? — summary CorpWatch\n"
+                    "что такое API? — свободный вопрос к Ollama"
                 ),
             )
             return
 
-        run_check = self.should_run_manual_check(text)
+        if text.startswith("/targets"):
+            try:
+                self.send_typing_action(chat_id)
+                targets_text = self.get_targets_text()
+                self.send_message(chat_id, targets_text)
+            except requests.RequestException as error:
+                logger.error("Telegram bot failed to get targets: %s", error)
+                self.send_message(
+                    chat_id,
+                    "Не смог получить targets из CorpWatch API. Проверь контейнер app.",
+                )
+
+            return
+
+        target_id = self.extract_target_id(text)
+        check_intent = self.has_check_intent(text)
+
+        if check_intent and target_id is None:
+            self.send_message(
+                chat_id,
+                "Напиши target id. Например: проверь target 4",
+            )
+            return
+
+        if target_id is not None and not check_intent:
+            try:
+                self.send_typing_action(chat_id)
+                target_text = self.get_target_text(target_id)
+                self.send_message(chat_id, target_text)
+            except requests.RequestException as error:
+                logger.error("Telegram bot failed to get target info: %s", error)
+                self.send_message(
+                    chat_id,
+                    "Не смог получить target из CorpWatch API. Проверь контейнер app.",
+                )
+
+            return
+
+        mode = self.detect_mode(text)
+        run_check = mode == "manual_check"
 
         try:
             self.send_typing_action(chat_id)
@@ -174,6 +374,7 @@ class CorpWatchTelegramBot:
             answer = self.ask_ai_assistant(
                 question=text,
                 run_check=run_check,
+                mode=mode,
             )
 
             self.send_message(chat_id, answer)
@@ -192,6 +393,7 @@ class CorpWatchTelegramBot:
     def run(self) -> None:
         logger.info("CorpWatch Telegram bot started")
         logger.info("AI assistant URL: %s", self.ai_assistant_url)
+        logger.info("CorpWatch API URL: %s", self.corpwatch_api_url)
 
         if self.allowed_chat_ids:
             logger.info("Telegram whitelist enabled: %s", self.allowed_chat_ids)
