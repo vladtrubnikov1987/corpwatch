@@ -105,9 +105,11 @@ class AIAssistantHandler(BaseHTTPRequestHandler):
 
             question = data.get("question", "Что сейчас сломалось?")
             run_check = parse_bool(data.get("run_check", False))
+            mode = data.get("mode")
 
             logger.info(
-                "AI explain request received. run_check=%s question=%s",
+                "AI explain request received. mode=%s run_check=%s question=%s",
+                mode,
                 run_check,
                 question,
             )
@@ -115,6 +117,7 @@ class AIAssistantHandler(BaseHTTPRequestHandler):
             result = ai_assistant_service.explain(
                 user_question=question,
                 run_check=run_check,
+                mode=mode,
             )
 
             status_code = 200 if result.get("success") else 400
