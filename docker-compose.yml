@@ -127,6 +127,14 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   phpmyadmin:
     image: phpmyadmin:latest
     container_name: corpwatch_phpmyadmin

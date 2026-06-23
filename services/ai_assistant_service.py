@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from datetime import datetime
@@ -6,92 +5,85 @@ from typing import Any
 
 import requests
 
-
-DIAGNOSIS_BY_RESULT_TYPE = {
-    "SUCCESS": "цель сейчас работает нормально",
-    "SLOW_RESPONSE": "цель отвечает, но медленнее заданного порога",
-    "WRONG_STATUS": "цель ответила неожиданным HTTP-кодом",
-    "TIMEOUT": "цель не ответила за отведённый таймаут",
-    "CONNECTION_ERROR": (
-        "не удалось подключиться к цели: возможны проблемы с DNS, "
-        "сетью или сам сервис недоступен"
-    ),
-}
+from utils.logger import logger
 
 
-HUMAN_EXPLANATION_PROMPT_TEMPLATE = """Ты — AI Assistant проекта CorpWatch.
+FREE_CHAT_PROMPT_TEMPLATE = """Ты — локальный AI assistant проекта CorpWatch по имени Jarvis.
 
-Твоя задача:
-написать человеческое объяснение результата проверки сайта.
+Ты работаешь в Telegram как обычный полезный AI assistant, но также понимаешь контекст проекта CorpWatch.
 
-Правила:
-- Верни 2–4 живые фразы.
-- Не пиши заголовок.
-- Не пиши список.
-- Не пиши technical details отдельными строками.
-- Не переводи и не меняй название target.
-- Не меняй HTTP-коды.
-- Не меняй result_type.
-- Не добавляй новые причины.
-- Используй только данные ниже.
-- Пиши так, будто объясняешь человеку, что произошло.
+Твои возможности:
+- отвечать на обычные вопросы;
+- объяснять Python, Docker, API, backend, databases, monitoring, Telegram bot, Ollama;
+- анализировать архитектуру проекта;
+- помогать с README, ROADMAP, Demo.md, Markdown и кодом;
+- отвечать подробно, если пользователь просит "полностью", "подробно", "разбери всё", "проанализируй полностью";
+- продолжать предыдущую мысль, если пользователь пишет короткий follow-up: "да", "полностью", "продолжай", "сделай", "ок".
 
-Target name: {target_name}
-URL: {target_url}
-Result type: {result_type}
-Expected HTTP: {expected_status}
-Actual HTTP: {actual_status}
-Diagnosis: {diagnosis}
-Alert status: {alert_status}
-Severity: {alert_severity}
-Notification status: {notification_status}
-Response time ms: {response_time_ms}
-
-Ответь по-русски."""
-
-
-SUMMARY_REWRITE_PROMPT_TEMPLATE = """Ты — AI Assistant проекта CorpWatch.
-
-Ниже находится технически правильный summary draft.
-Твоя задача — переписать его человеческим языком.
-
-Правила:
-- Не меняй смысл.
-- Не говори, что система стабильна, если в draft сказано, что есть проблема.
-- Не придумывай новые причины.
-- Не придумывай targets, контейнеры, nginx, Cloudflare или tunnel.
-- Не меняй числа.
-- Не используй слова "сегодня", "вчера", "завтра", если их нет в draft.
-- Дату и время последней проверки переписывай ровно как указано в draft.
-- Ответ должен быть 3–5 коротких фраз.
-- Пиши как помощник, который объясняет состояние мониторинга человеку.
-
-Summary draft:
-{draft}
-
-Ответь по-русски."""
-
-
-FREE_CHAT_PROMPT_TEMPLATE = """Ты — локальный AI assistant.
-
-Пользователь может задавать обычные вопросы на русском, английском или иврите.
-
-Правила:
-- Отвечай на языке пользователя, если можешь.
-- Если пользователь просит "на русском" — отвечай по-русски.
+Главные правила:
+- Если пользователь пишет по-русски — отвечай ТОЛЬКО по-русски.
+- Не используй китайский язык.
+- Не смешивай языки без необходимости.
 - Не притягивай CorpWatch к ответу, если вопрос явно не про CorpWatch.
-- Если вопрос про CorpWatch, Docker, мониторинг, target, alert или систему — отвечай в контексте проекта CorpWatch.
-- Если вопрос общий, отвечай как обычный помощник.
-- Если вопрос про дату или время, используй текущую дату и время из CONTEXT.
-- Если не понимаешь вопрос, попроси переформулировать.
+- Если вопрос про CorpWatch, Docker, мониторинг, target, alert, backend, Telegram bot или AI layer — отвечай в контексте проекта CorpWatch.
+- Если пользователь просит анализ файла, но содержимое файла не передано в сообщении или контексте, честно скажи, что тебе нужно содержимое файла или команда/механизм доступа к файлу.
+- Не проси уточнение, если смысл можно восстановить из CONTEXT.
+- Если запрос широкий, дай структурированный ответ: архитектура, сильные стороны, слабые места, улучшения, вывод.
+- Для monitoring-статусов не выдумывай факты: status, result_type, alert, notification должны приходить из CorpWatch API.
+- В free_chat можно отвечать свободно и развёрнуто.
 
 CONTEXT:
 Current datetime: {current_datetime}
 
+Conversation context:
+{conversation_context}
+
 USER QUESTION:
 {user_question}
 
-Ответь естественно и кратко."""
+Ответь естественно, полезно и по делу.
+"""
+
+
+HUMAN_EXPLANATION_PROMPT_TEMPLATE = """Ты — локальный AI assistant проекта CorpWatch.
+
+Тебе переданы проверенные факты мониторинга от Python backend.
+Ты НЕ принимаешь monitoring decisions.
+Ты только объясняешь пользователю уже готовые факты простым языком.
+
+Правила:
+- Отвечай по-русски.
+- Не меняй technical facts.
+- Не выдумывай HTTP status, result_type, alert_status, notification_status.
+- Не говори, что сайт работает, если result_type не SUCCESS.
+- Не говори, что есть проблема, если result_type SUCCESS и alert_status NO_ALERT.
+- Ответ должен быть понятным человеку.
+
+FACTS:
+{facts}
+
+Сделай короткое человеческое объяснение результата.
+"""
+
+
+SUMMARY_REWRITE_PROMPT_TEMPLATE = """Ты — локальный AI assistant проекта CorpWatch.
+
+Тебе передан черновик summary, созданный Python backend на основе verified facts.
+Ты НЕ принимаешь monitoring decisions.
+Ты только переписываешь черновик более понятным языком.
+
+Правила:
+- Отвечай по-русски.
+- Не меняй смысл.
+- Не выдумывай новые targets, alerts или ошибки.
+- Если в черновике сказано, что есть open alerts, не называй систему полностью стабильной.
+- Если open alerts = 0, можно сказать, что критичных открытых проблем сейчас нет.
+
+SUMMARY DRAFT:
+{summary_draft}
+
+Перепиши summary естественным языком.
+"""
 
 
 class AIAssistantService:
@@ -101,7 +93,7 @@ class AIAssistantService:
     Modes:
     - manual_check: run check and explain target result.
     - system_summary: explain CorpWatch monitoring summary.
-    - free_chat: general Ollama answer without CorpWatch summary.
+    - free_chat: normal LLM answer without forced monitoring context.
     """
 
     def __init__(self) -> None:
@@ -180,386 +172,270 @@ class AIAssistantService:
 
         return None
 
-    def normalize_api_data(self, data: dict[str, Any]) -> Any:
-        return data.get("data", data.get("targets", data))
-
-    def to_int(self, value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    def to_float(self, value: Any, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-
     def detect_mode(
         self,
         user_question: str,
-        run_check: bool,
-        mode: str | None,
+        run_check: bool = False,
+        mode: str | None = None,
     ) -> str:
-        if mode in {"manual_check", "system_summary", "free_chat"}:
+        if mode in ("manual_check", "system_summary", "free_chat"):
             return mode
+
+        text = user_question.strip().lower()
 
         if run_check:
             return "manual_check"
 
-        lowered = user_question.lower()
-
-        system_phrases = [
+        summary_words = [
             "что сейчас с системой",
             "что с системой",
-            "состояние системы",
             "статус системы",
             "summary",
-            "system status",
-            "что происходит в системе",
-            "как система",
-            "как дела у системы",
+            "system summary",
+            "сводка",
+            "общий статус",
         ]
 
-        if any(phrase in lowered for phrase in system_phrases):
+        if any(word in text for word in summary_words):
             return "system_summary"
+
+        check_words = [
+            "проверь",
+            "проверить",
+            "check target",
+            "run check",
+            "manual check",
+        ]
+
+        if any(word in text for word in check_words) and self.extract_target_id(text):
+            return "manual_check"
 
         return "free_chat"
 
-    def estimate_downtime(
+    def normalize_api_data(self, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {key: self.normalize_api_data(value) for key, value in data.items()}
+
+        if isinstance(data, list):
+            return [self.normalize_api_data(item) for item in data]
+
+        return data
+
+    def pick_first_existing(self, data: dict[str, Any], keys: list[str], default=None):
+        for key in keys:
+            if key in data and data[key] is not None:
+                return data[key]
+
+        return default
+
+    # ---------- Ollama ----------
+
+    def ask_ollama(
         self,
-        consecutive_failures: Any,
-        interval_seconds: Any,
-    ) -> str | None:
-        try:
-            failures = int(consecutive_failures)
-            interval = int(interval_seconds)
-        except (TypeError, ValueError):
-            return None
-
-        if failures <= 0 or interval <= 0:
-            return None
-
-        total_seconds = failures * interval
-
-        if total_seconds < 60:
-            return None
-
-        minutes = round(total_seconds / 60)
-
-        return (
-            f"{failures} проверок подряд с ошибкой при интервале {interval}с — "
-            f"примерно {minutes} мин"
-        )
-
-    def classify_result(
-        self,
-        result_type: str | None,
-        status_code: int | None,
+        prompt: str,
+        temperature: float = 0.2,
+        num_predict: int = 400,
     ) -> str:
-        if result_type == "WRONG_STATUS" and status_code == 530:
-            return (
-                "похоже на проблему Cloudflare Tunnel или origin-сервера: "
-                "demo-сайт может быть недоступен за Cloudflare"
-            )
+        payload = {
+            "model": self.ollama_model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": num_predict,
+            },
+        }
 
-        if result_type == "WRONG_STATUS" and status_code in (502, 503, 504):
-            return "сервис недоступен за прокси или туннелем"
-
-        return DIAGNOSIS_BY_RESULT_TYPE.get(
-            result_type or "",
-            "недостаточно данных для точной классификации",
+        response = requests.post(
+            f"{self.ollama_api_url}/api/generate",
+            json=payload,
+            timeout=180,
         )
 
-    # ---------- Fact building ----------
+        response.raise_for_status()
+        data = response.json()
+
+        answer = data.get("response", "")
+
+        if not answer:
+            raise requests.RequestException("Ollama returned empty response")
+
+        return answer.strip()
+
+    # ---------- Prompt builders ----------
+
+    def build_free_chat_prompt(
+        self,
+        user_question: str,
+        conversation_context: str = "",
+    ) -> str:
+        return FREE_CHAT_PROMPT_TEMPLATE.format(
+            current_datetime=datetime.now().isoformat(timespec="seconds"),
+            conversation_context=conversation_context or "No previous context.",
+            user_question=user_question,
+        )
+
+    def build_human_explanation_prompt(self, facts: dict[str, Any]) -> str:
+        return HUMAN_EXPLANATION_PROMPT_TEMPLATE.format(
+            facts=facts,
+        )
+
+    def build_summary_rewrite_prompt(self, summary_draft: str) -> str:
+        return SUMMARY_REWRITE_PROMPT_TEMPLATE.format(
+            summary_draft=summary_draft,
+        )
+
+    # ---------- Fact builders ----------
 
     def build_facts(
         self,
         summary_report: dict[str, Any],
         targets: dict[str, Any],
-        manual_check: dict[str, Any] | None,
+        manual_check: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        compact_facts: dict[str, Any] = {
-            "summary": summary_report.get("data", summary_report),
-            "targets": [],
-            "manual_check": None,
-            "downtime_estimate": None,
-            "deterministic_diagnosis": "ручная проверка не запрашивалась",
+        return {
+            "summary_report": self.normalize_api_data(summary_report),
+            "targets": self.normalize_api_data(targets),
+            "manual_check": self.normalize_api_data(manual_check),
         }
-
-        targets_data = self.normalize_api_data(targets)
-        targets_by_id: dict[int, dict[str, Any]] = {}
-
-        if isinstance(targets_data, list):
-            for target in targets_data:
-                target_id = target.get("id")
-
-                if target_id is None:
-                    continue
-
-                target_id_int = int(target_id)
-                targets_by_id[target_id_int] = target
-
-                compact_facts["targets"].append(
-                    {
-                        "id": target_id_int,
-                        "name": target.get("name"),
-                        "url": target.get("url"),
-                        "is_active": target.get("is_active"),
-                        "expected_status": target.get("expected_status"),
-                        "check_interval_seconds": target.get("check_interval_seconds"),
-                        "consecutive_failures": target.get("consecutive_failures"),
-                    }
-                )
-
-        if manual_check:
-            manual_data = manual_check.get("data", manual_check)
-
-            result_type = manual_data.get("result_type")
-            status_code = manual_data.get("status_code")
-            target_id = manual_data.get("target_id")
-
-            target_id_int = int(target_id) if target_id is not None else None
-            focused_target = targets_by_id.get(target_id_int, {})
-
-            compact_facts["manual_check"] = {
-                "target_id": target_id_int,
-                "target_name": manual_data.get("target_name") or focused_target.get("name"),
-                "target_url": manual_data.get("target_url") or focused_target.get("url"),
-                "is_active": focused_target.get("is_active"),
-                "expected_status": manual_data.get("expected_status")
-                or focused_target.get("expected_status"),
-                "actual_status": status_code,
-                "result_type": result_type,
-                "response_time_ms": manual_data.get("response_time_ms"),
-                "alert_status": manual_data.get("alert_status"),
-                "alert_severity": manual_data.get("alert_severity"),
-                "notification_status": manual_data.get("notification_status"),
-                "error_message": manual_data.get("error_message"),
-            }
-
-            compact_facts["deterministic_diagnosis"] = self.classify_result(
-                result_type=result_type,
-                status_code=status_code,
-            )
-
-            compact_facts["downtime_estimate"] = self.estimate_downtime(
-                focused_target.get("consecutive_failures"),
-                focused_target.get("check_interval_seconds"),
-            )
-
-        return compact_facts
-
-    # ---------- Summary ----------
-
-    def build_summary_draft(self, facts: dict[str, Any]) -> str:
-        summary = facts.get("summary") or {}
-
-        total_targets = self.to_int(summary.get("total_targets"))
-        active_targets = self.to_int(summary.get("active_targets"))
-        total_checks = self.to_int(summary.get("total_checks"))
-        success_checks = self.to_int(summary.get("success_checks"))
-        failed_checks = self.to_int(summary.get("failed_checks"))
-        open_alerts = self.to_int(summary.get("open_alerts"))
-        resolved_alerts = self.to_int(summary.get("resolved_alerts"))
-        total_notifications = self.to_int(summary.get("total_notifications"))
-        sent_notifications = self.to_int(summary.get("sent_notifications"))
-        failed_notifications = self.to_int(summary.get("failed_notifications"))
-        average_response_time_ms = self.to_float(summary.get("average_response_time_ms"))
-        worst_response_time_ms = self.to_int(summary.get("worst_response_time_ms"))
-        last_check_time = summary.get("last_check_time")
-
-        if open_alerts > 0:
-            system_status = "ПРОБЛЕМА"
-            main_line = (
-                f"CorpWatch сейчас НЕ считает систему полностью стабильной: "
-                f"есть {open_alerts} открытый alert."
-            )
-        elif failed_checks > 0:
-            system_status = "ВНИМАНИЕ"
-            main_line = (
-                "Сейчас открытых alert нет, но в истории мониторинга "
-                f"есть {failed_checks} failed checks."
-            )
-        else:
-            system_status = "OK"
-            main_line = "CorpWatch сейчас не видит открытых проблем."
-
-        lines = [
-            f"System status: {system_status}",
-            main_line,
-            f"Всего targets: {total_targets}. Активных targets: {active_targets}.",
-            f"Всего проверок: {total_checks}. Успешных: {success_checks}. Ошибочных: {failed_checks}.",
-            f"Open alerts: {open_alerts}. Resolved alerts: {resolved_alerts}.",
-            f"Average response time: {average_response_time_ms} ms.",
-            f"Worst response time: {worst_response_time_ms} ms.",
-            f"Notifications: всего {total_notifications}, отправлено {sent_notifications}, ошибок отправки {failed_notifications}.",
-        ]
-
-        if last_check_time:
-            lines.append(f"Последняя проверка: {last_check_time}.")
-
-        if open_alerts > 0:
-            lines.append(
-                "Вывод: систему нельзя называть стабильной, пока есть открытый alert."
-            )
-
-        return "\n".join(lines)
-
-    def build_summary_rewrite_prompt(self, draft: str) -> str:
-        return SUMMARY_REWRITE_PROMPT_TEMPLATE.format(draft=draft)
-
-    # ---------- Manual check ----------
-
-    def build_human_explanation_prompt(
-        self,
-        facts: dict[str, Any],
-    ) -> str:
-        manual_check = facts.get("manual_check") or {}
-
-        return HUMAN_EXPLANATION_PROMPT_TEMPLATE.format(
-            target_name=manual_check.get("target_name") or "Unknown target",
-            target_url=manual_check.get("target_url") or "unknown URL",
-            result_type=manual_check.get("result_type"),
-            expected_status=manual_check.get("expected_status"),
-            actual_status=manual_check.get("actual_status"),
-            diagnosis=facts.get("deterministic_diagnosis"),
-            alert_status=manual_check.get("alert_status"),
-            alert_severity=manual_check.get("alert_severity"),
-            notification_status=manual_check.get("notification_status"),
-            response_time_ms=manual_check.get("response_time_ms"),
-        )
-
-    def build_default_human_explanation(self, facts: dict[str, Any]) -> str:
-        manual_check = facts.get("manual_check") or {}
-
-        target_url = manual_check.get("target_url") or "unknown URL"
-        expected_status = manual_check.get("expected_status")
-        actual_status = manual_check.get("actual_status")
-        result_type = manual_check.get("result_type")
-        diagnosis = facts.get("deterministic_diagnosis")
-
-        if result_type == "SUCCESS":
-            return (
-                f"CorpWatch проверил сайт {target_url}. "
-                f"Сайт отвечает корректно: ожидался HTTP {expected_status} "
-                f"и был получен HTTP {actual_status}. "
-                f"Проблем с доступностью сейчас не обнаружено."
-            )
-
-        return (
-            f"CorpWatch проверил сайт {target_url} и обнаружил проблему. "
-            f"Система ожидала HTTP {expected_status}, но получила HTTP {actual_status}. "
-            f"Диагноз: {diagnosis}."
-        )
 
     def build_manual_check_answer(
         self,
         facts: dict[str, Any],
         human_explanation: str | None = None,
     ) -> str:
-        manual_check = facts.get("manual_check")
+        manual_check = facts.get("manual_check") or {}
 
-        if not manual_check:
-            return "Manual check не запускался."
+        target = manual_check.get("target") or {}
+        check_result = manual_check.get("check_result") or manual_check.get("result") or {}
 
-        target_id = manual_check.get("target_id")
-        target_name = manual_check.get("target_name") or "Unknown target"
-        target_url = manual_check.get("target_url") or "unknown URL"
-        expected_status = manual_check.get("expected_status")
-        actual_status = manual_check.get("actual_status")
-        result_type = manual_check.get("result_type")
-        response_time_ms = manual_check.get("response_time_ms")
-        alert_status = manual_check.get("alert_status")
-        alert_severity = manual_check.get("alert_severity")
-        notification_status = manual_check.get("notification_status")
-        error_message = manual_check.get("error_message")
-        downtime_estimate = facts.get("downtime_estimate")
+        target_name = (
+            target.get("name")
+            or manual_check.get("target_name")
+            or manual_check.get("name")
+            or "Unknown target"
+        )
 
-        status = "OK" if result_type == "SUCCESS" else "ПРОБЛЕМА"
+        target_url = (
+            target.get("url")
+            or manual_check.get("target_url")
+            or manual_check.get("url")
+            or "Unknown URL"
+        )
 
-        if not human_explanation:
-            human_explanation = self.build_default_human_explanation(facts)
+        expected_status = (
+            target.get("expected_status")
+            or manual_check.get("expected_status")
+            or check_result.get("expected_status")
+        )
 
-        lines = [
-            f"Target {target_id} — {target_name}",
-            "",
-            f"Статус: {status}",
-            "",
-            human_explanation.strip(),
-            "",
-            "Технические детали:",
-            f"URL: {target_url}",
-        ]
+        actual_status = (
+            check_result.get("status_code")
+            or manual_check.get("status_code")
+            or manual_check.get("actual_status")
+        )
+
+        response_time_ms = (
+            check_result.get("response_time_ms")
+            or manual_check.get("response_time_ms")
+        )
+
+        result_type = (
+            check_result.get("result_type")
+            or manual_check.get("result_type")
+            or "UNKNOWN"
+        )
+
+        alert_status = manual_check.get("alert_status", "UNKNOWN")
+        notification_status = manual_check.get("notification_status", "UNKNOWN")
+        severity = manual_check.get("severity")
+
+        is_ok = result_type == "SUCCESS" and alert_status in (
+            "NO_ALERT",
+            "RESOLVED",
+            "UNKNOWN",
+        )
+
+        status_line = "Статус: OK" if is_ok else "Статус: ПРОБЛЕМА"
+
+        parts = [status_line]
+
+        if human_explanation:
+            parts.append("")
+            parts.append(human_explanation)
+
+        parts.append("")
+        parts.append("Технические детали:")
+        parts.append(f"Target: {target_name}")
+        parts.append(f"URL: {target_url}")
 
         if expected_status is not None:
-            lines.append(f"Expected HTTP: {expected_status}")
+            parts.append(f"Expected HTTP: {expected_status}")
 
         if actual_status is not None:
-            lines.append(f"Actual HTTP: {actual_status}")
+            parts.append(f"Actual HTTP: {actual_status}")
 
         if response_time_ms is not None:
-            lines.append(f"Response time: {response_time_ms} ms")
+            parts.append(f"Response time: {response_time_ms} ms")
 
-        if downtime_estimate:
-            lines.append(f"Downtime estimate: {downtime_estimate}")
+        parts.append(f"Result: {result_type}")
+        parts.append(f"Alert: {alert_status}")
 
-        if error_message:
-            lines.append(f"Error: {error_message}")
+        if severity is not None:
+            parts.append(f"Severity: {severity}")
 
-        lines.append(f"Result: {result_type}")
+        parts.append(f"Notification: {notification_status}")
 
-        if alert_status:
-            lines.append(f"Alert: {alert_status}")
+        return "\n".join(parts)
 
-        if alert_severity and alert_severity != "UNKNOWN":
-            lines.append(f"Severity: {alert_severity}")
+    def build_summary_draft(self, facts: dict[str, Any]) -> str:
+        summary = facts.get("summary_report") or {}
+        targets_data = facts.get("targets") or {}
 
-        if notification_status:
-            lines.append(f"Notification: {notification_status}")
-
-        return "\n".join(lines)
-
-    # ---------- Free chat ----------
-
-    def build_free_chat_prompt(self, user_question: str) -> str:
-        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        return FREE_CHAT_PROMPT_TEMPLATE.format(
-            current_datetime=current_datetime,
-            user_question=user_question,
+        total_targets = self.pick_first_existing(
+            summary,
+            ["total_targets", "targets_total"],
+            "unknown",
         )
 
-    # ---------- LLM ----------
-
-    def ask_ollama(
-        self,
-        prompt: str,
-        temperature: float = 0.2,
-        num_predict: int = 220,
-    ) -> str:
-        response = requests.post(
-            f"{self.ollama_api_url}/api/generate",
-            json={
-                "model": self.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": num_predict,
-                },
-            },
-            timeout=120,
+        active_targets = self.pick_first_existing(
+            summary,
+            ["active_targets", "targets_active"],
+            "unknown",
         )
 
-        response.raise_for_status()
+        open_alerts = self.pick_first_existing(
+            summary,
+            ["open_alerts", "alerts_open"],
+            0,
+        )
 
-        answer = response.json().get("response", "").strip()
+        total_checks = self.pick_first_existing(
+            summary,
+            ["total_checks", "checks_total"],
+            "unknown",
+        )
 
-        if not answer:
-            raise requests.RequestException("Ollama returned empty response")
+        failed_checks = self.pick_first_existing(
+            summary,
+            ["failed_checks", "checks_failed"],
+            "unknown",
+        )
 
-        return answer
+        system_status = "OK" if open_alerts == 0 else "ПРОБЛЕМА"
+
+        return (
+            f"System status: {system_status}\n"
+            f"Total targets: {total_targets}\n"
+            f"Active targets: {active_targets}\n"
+            f"Open alerts: {open_alerts}\n"
+            f"Total checks: {total_checks}\n"
+            f"Failed checks: {failed_checks}\n"
+            f"Targets data: {targets_data}\n"
+            "\n"
+            "Explain this monitoring summary to the user in Russian. "
+            "Do not invent facts. If open_alerts is greater than 0, do not say the system is fully stable."
+        )
 
     # ---------- Main entry point ----------
 
@@ -568,6 +444,7 @@ class AIAssistantService:
         user_question: str,
         run_check: bool = False,
         mode: str | None = None,
+        conversation_context: str = "",
     ) -> dict[str, Any]:
         selected_mode = self.detect_mode(
             user_question=user_question,
@@ -577,23 +454,32 @@ class AIAssistantService:
 
         target_id = self.extract_target_id(user_question)
 
+        logger.info(
+            "AI assistant selected mode=%s target_id=%s",
+            selected_mode,
+            target_id,
+        )
+
         # Free chat does not need CorpWatch API.
         if selected_mode == "free_chat":
-            prompt = self.build_free_chat_prompt(user_question)
+            prompt = self.build_free_chat_prompt(
+                user_question=user_question,
+                conversation_context=conversation_context,
+            )
 
             try:
                 answer = self.ask_ollama(
                     prompt=prompt,
-                    temperature=0.3,
-                    num_predict=220,
+                    temperature=0.5,
+                    num_predict=1000,
                 )
-            except requests.RequestException:
+            except requests.RequestException as error:
+                logger.error("Ollama free_chat failed: %s", error)
+
                 return {
                     "success": False,
                     "error": "ollama_unavailable",
-                    "message": (
-                        "AI-ассистент временно недоступен: Ollama не отвечает."
-                    ),
+                    "message": "AI-ассистент временно недоступен: Ollama не отвечает.",
                 }
 
             return {
@@ -606,7 +492,9 @@ class AIAssistantService:
         try:
             summary_report = self.get_summary_report()
             targets = self.get_targets()
-        except requests.RequestException:
+        except requests.RequestException as error:
+            logger.error("CorpWatch API unavailable: %s", error)
+
             return {
                 "success": False,
                 "error": "corpwatch_api_unavailable",
@@ -628,7 +516,9 @@ class AIAssistantService:
 
             try:
                 manual_check = self.run_manual_check(target_id)
-            except requests.RequestException:
+            except requests.RequestException as error:
+                logger.error("Manual check failed for target_id=%s: %s", target_id, error)
+
                 return {
                     "success": False,
                     "error": "manual_check_failed",
@@ -650,9 +540,10 @@ class AIAssistantService:
                 human_explanation = self.ask_ollama(
                     prompt=prompt,
                     temperature=0.1,
-                    num_predict=180,
+                    num_predict=350,
                 )
-            except requests.RequestException:
+            except requests.RequestException as error:
+                logger.warning("Ollama manual_check explanation failed: %s", error)
                 human_explanation = None
 
             answer = self.build_manual_check_answer(
@@ -678,10 +569,11 @@ class AIAssistantService:
         try:
             answer = self.ask_ollama(
                 prompt=prompt,
-                temperature=0.1,
-                num_predict=220,
+                temperature=0.2,
+                num_predict=500,
             )
-        except requests.RequestException:
+        except requests.RequestException as error:
+            logger.warning("Ollama summary rewrite failed: %s", error)
             answer = summary_draft
 
         return {

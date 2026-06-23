@@ -14,7 +14,7 @@ def parse_bool(value) -> bool:
         return False
 
     if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "y")
+        return value.strip().lower() in ("true", "1", "yes", "y", "да")
 
     return False
 
@@ -106,18 +106,21 @@ class AIAssistantHandler(BaseHTTPRequestHandler):
             question = data.get("question", "Что сейчас сломалось?")
             run_check = parse_bool(data.get("run_check", False))
             mode = data.get("mode")
+            conversation_context = data.get("conversation_context", "")
 
             logger.info(
-                "AI explain request received. mode=%s run_check=%s question=%s",
+                "AI explain request received. mode=%s run_check=%s question=%s context_len=%s",
                 mode,
                 run_check,
                 question,
+                len(conversation_context),
             )
 
             result = ai_assistant_service.explain(
                 user_question=question,
                 run_check=run_check,
                 mode=mode,
+                conversation_context=conversation_context,
             )
 
             status_code = 200 if result.get("success") else 400
